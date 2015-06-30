@@ -54,11 +54,17 @@
 #		-Added check for 10+ criteria smart groups
 #		-Simplified recommendations
 #	Version 2.0 Updated by Sam Fortuna February 28, 2015
-#		-Fixed an issue gathering ongoing update inventory 
+#		-Fixed an issue gathering ongoing update inventory policies
 #		-Updated to support changes to 9.65 JSS Summaries
-#	Version 2.1 Updated by Nick Anderson on April 7, 2015
-#		-Added VPP token expiration
-#		-Added fragile logging path check
+#	Version 2.1 Updated by Sam Fortuna March 24, 2015
+#		-Added smart group counters
+#		-Added log file location check
+#	Version 2.2 Updated by Sam Fortuna May 26, 2015
+#		-Fixed an issue parsing smart group names that included periods
+#		-Added total criteria count to potentially problematic group identification
+#		-Added VPP expiration output
+#	Version 2.3 Updated by Sam Fortuna June 4, 2015
+#		-Fixed table size parsing
 #
 ####################################################################################################
 
@@ -95,15 +101,15 @@ basicInfo=`head -n 75 $file`
 #Find the line number that includes clustering information
 lineNum=`cat $file | grep -n "Clustering Enabled" | awk -F : '{print $1}'`
 #Store 100 lines after clustering information
-subInfo=`head -n $(($lineNum + 110)) $file | tail -n 101`
+subInfo=`head -n $(($lineNum + 100)) $file | tail -n 101`
 #Find the line number for the push certificate Subject (used to get the expiration)
 pushExpiration=`echo "$subInfo" | grep -n "com.apple.mgmt" | awk -F : '{print $1}'`
 #Find the line number that includes checkin frequency information
 lineNum=`cat $file | grep -n "Check-in Frequency" | awk -F : '{print $1}'`
 #Store 30 lines after the Check-in Frequency information begins
 checkInInfo=`head -n $(($lineNum + 30)) $file | tail -n 31`
-#Store last 300 lines to check database table sizes
-dbInfo=`tail -n 300 $file`
+#Store last 325 lines to check database table sizes
+dbInfo=`tail -n 325 $file`
 #Determine whether clustering is enabled
 clustering=`echo "$subInfo" | awk '/Clustering Enabled/ {print $NF}'`
 #Find the models of printers and determine whether none, some, or xerox for max packet size
@@ -115,12 +121,6 @@ mobiles=`echo "$basicInfo" | awk '/Managed Mobile Devices/ {print $NF}'`
 totaldevices="$(( $computers + $mobiles ))"
 #Find today's unix epoch time to help with our certificate expiration calculation
 todayepoch=`date +"%s"`
-
-#Future use for determining scalability recommendations
-#if [ "$clustering" = "true" ]; then
-#	echo "How many web apps are there?"
-#	read webapps
-#fi
 
 #Sort our summary into a performance bracket based on number of devices total
 if (( $totaldevices < 501 )) ; then
@@ -149,9 +149,9 @@ elif (( $totaldevices < 5001 )) ; then
 	clusterrec="Consider Load Balancing"
 else
 	echo "Bracket shown for > 5000 Devices. SO MANY DEVICES."
-	poolsizerec="Tomcat monitoring software recommended"
-	sqlconnectionsrec="Tomcat monitoring software recommended"
-	httpthreadsrec="Tomcat monitoring software recommended"
+	poolsizerec="Too many variables to determine a standard default recommendation"
+	sqlconnectionsrec="Too many variables to determine a standard default recommendation"
+	httpthreadsrec="Too many variables to determine a standard default recommendation"
 	clusterrec="Load Balancing"
 fi
 
@@ -188,19 +188,20 @@ binlogging=`echo "$basicInfo" | awk '/log_bin/ {print $NF}'`
 if [ "$binlogging" = "OFF" ] ; then
 	echo $echomode "Bin Logging: \t\t\t\t $(echo "$basicInfo" | awk '/log_bin/ {print $NF}') \t$(tput setaf 2)✓$(tput sgr0)"
 else
-	echo $echomode "Bin Logging: \t\t\t\t $(echo "$basicInfo" | awk '/log_bin/ {print $NF}') \t$(tput setaf 9)[!]$(tput sgr0)"
+	echo $echomode "Bin Logging: \t\t\t\t $(echo "$basicInfo" | awk '/log_bin/ {print $NF}') \t$(tput setaf 9)Is there a reason binary logging is enabled (MySQL Replication)?\t[!]$(tput sgr0)"
 fi
 echo $echomode "Max Allowed Packet Size: \t\t $(($(echo "$basicInfo" | awk '/max_allowed_packet/ {print $NF}')/ 1048576)) MB \t$(tput setaf 2)Recommended: $maxpacketrec$(tput sgr0)"
 echo $echomode "MySQL Version: \t\t\t\t $(echo "$basicInfo" | awk '/version ..................../ {print $NF}')"
 
 #Alert user to change management being disabled
 changemanagement=`echo "$subInfo" | awk '/Use Log File/ {print $NF}'`
-if [ $changemanagement = false ] ; then
+if [ "$changemanagement" = "false" ] ; then
 	echo $echomode "Change Management Enabled: \t\t $(echo "$subInfo" | awk '/Use Log File/ {print $NF}') \t$(tput setaf 2)Recommended: On$(tput sgr0)"
 else
 	echo $echomode "Change Management Enabled: \t\t $(echo "$subInfo" | awk '/Use Log File/ {print $NF}') \t$(tput setaf 2)✓$(tput sgr0)"
 fi
 
+# Check log path against current operating system version, if non-default show warning
 logpath=`echo $echomode $(echo "$subInfo" | awk -F . '/Location of Log File/ {print $NF}')`
 findos=`echo $echomode $(echo "$basicInfo" | grep "Operating System" | awk '{for (i=3; i<NF; i++) printf $i " "; print $NF}')`
 detectosx=`echo $findos | grep Mac`
@@ -210,19 +211,19 @@ if [[ "$detectosx" != "" ]] ; then
 	if [[ "$logpath" = "/Library/JSS/Logs" ]] ; then
 		echo $echomode "Log File Location: \t\t\t $(echo "$subInfo" | awk -F . '/Location of Log File/ {print $NF}')"
 	else
-		echo $echomode "Log File Location: \t\t\t $(echo "$subInfo" | awk -F . '/Location of Log File/ {print $NF}')\t$(tput setaf 9)❗$(tput sgr0)"
+		echo $echomode "Log File Location: \t\t\t $(echo "$subInfo" | awk -F . '/Location of Log File/ {print $NF}')\t$(tput setaf 9)Path doesn't match server OS❗$(tput sgr0)"
 	fi
 elif [[ "$detectlinux" != "" ]] ; then
 	if [[ "$logpath" = "/usr/local/jss/logs" ]] ; then # Probably not going to be universal
 		echo $echomode "Log File Location: \t\t\t $(echo "$subInfo" | awk -F . '/Location of Log File/ {print $NF}')"
 	else
-		echo $echomode "Log File Location: \t\t\t $(echo "$subInfo" | awk -F . '/Location of Log File/ {print $NF}')\t$(tput setaf 9)❗$(tput sgr0)"
+		echo $echomode "Log File Location: \t\t\t $(echo "$subInfo" | awk -F . '/Location of Log File/ {print $NF}')\t$(tput setaf 9)Path doesn't match server OS❗$(tput sgr0)"
 	fi
 elif [[ "$detectwindows" != "" ]] ; then
 	if [[ "$logpath" = "C:\Program Files\JSS\Logs" ]] ; then # Does this path have a capital L in Logs?
 		echo $echomode "Log File Location: \t\t\t $(echo "$subInfo" | awk -F . '/Location of Log File/ {print $NF}')"
 	else
-		echo $echomode "Log File Location: \t\t\t $(echo "$subInfo" | awk -F . '/Location of Log File/ {print $NF}')\t$(tput setaf 9)❗$(tput sgr0)"
+		echo $echomode "Log File Location: \t\t\t $(echo "$subInfo" | awk -F . '/Location of Log File/ {print $NF}') \t$(tput setaf 9)Path doesn't match server OS❗$(tput sgr0)"
 	fi
 else
 	echo $echomode "Log File Location: \t\t\t $(echo "$subInfo" | awk -F . '/Location of Log File/ {print $NF}')"
@@ -266,21 +267,23 @@ fi
 
 vppdate=`cat $file | grep -A 20 "VPP Accounts" | awk '/Expiration Date/ {print $NF}'`		#get the current vpp expiration date
 if [[ -n $vppdate ]] ; then
-	vppepoch=`date -jf "%Y/%m/%d %H:%M" "$vppdate 00:00" +"%s"`			#convert it to unix epoch
-	vppdifference=`python -c "print $vppepoch-$todayepoch"`				#subtract vpp epoch from today's epoch
-	vppresult=`python -c "print $vppdifference/86400"`					#divide by number of seconds in a day to get remaining days to expiration
+	for i in $vppdate; do
+		vppepoch=`date -jf "%Y/%m/%d %H:%M" "$i 00:00" +"%s"`				#convert it to unix epoch
+		vppdifference=`python -c "print $vppepoch-$todayepoch"`				#subtract vpp epoch from today's epoch
+		vppresult=`python -c "print $vppdifference/86400"`					#divide by number of seconds in a day to get remaining days to expiration
 
-	#If vpp token is expiring in under 60 days, output remaining days in red instead of green
-	if (( $vppresult > 60 )) ; then
-		echo $echomode "VPP Token Expiration: \t\t\t $(cat $file | grep -A 20 "VPP Accounts" | awk '/Expiration Date/ {print $NF}') \t$(tput setaf 2)$vppresult Days$(tput sgr0)"
-	else
-		echo $echomode "VPP Token Expiration: \t\t\t $(cat $file | cat $file | grep -A 20 "VPP Accounts" | awk '/Expiration Date/ {print $NF}') \t$(tput setaf 9)$vppresult Days$(tput sgr0)"
-	fi
+		#If vpp token is expiring in under 60 days, output remaining days in red instead of green
+		if (( $vppresult > 60 )) ; then
+			echo $echomode "VPP Token Expiration: \t\t\t $i \t$(tput setaf 2)$vppresult Days$(tput sgr0)"
+		else
+			echo $echomode "VPP Token Expiration: \t\t\t $i \t$(tput setaf 9)$vppresult Days$(tput sgr0)"
+		fi
+	done
 fi
 
 #Detect whether external CA is enabled and warn user
-externalca=`echo "$subInfo" | awk '/External CA enabled/ {print $NF}'`
-if [ "$externalca" = false ] ; then
+thirdpartycert=`echo "$subInfo" | awk '/External CA enabled/ {print $NF}'`
+if [ "$thirdpartycert" = "false" ] ; then
 	echo $echomode "External CA Enabled: \t\t\t $(echo "$subInfo" | awk '/External CA enabled/ {print $NF}')"
 else
 	echo $echomode "External CA Enabled: \t\t\t $(echo "$(tput setaf 3)$subInfo" | awk '/External CA enabled/ {print $NF}') \t$(tput setaf 9)[!]$(tput sgr0)"
@@ -342,7 +345,7 @@ echo $echomode
 echo $echomode "Tables over 1 GB in size:"
 largeTables=$(echo "$dbInfo" | awk '/GB/ {print $1, "\t", "\t", $(NF-1), $NF}')
 if [ "$largeTables" != "" ]; then
-	echo $echomode $largeTables "\t$(tput setaf 9)[!]$(tput sgr0)"
+	echo $echomode "$largeTables" "\t$(tput setaf 9)[!]$(tput sgr0)"
 else
 	echo $echomode "None \t$(tput setaf 2)✓$(tput sgr0)"
 fi
@@ -458,17 +461,25 @@ let lineNumber=lineNumber+1
 if [[ "${line}" == *"Smart Computer Groups"* ]]; then
 	lineNumber=`cat $file | awk '/Smart Computer Groups/{print NR; exit}'`
 	echo $echomode $line":"
+	groups=0
 elif [[ "${line}" == *"Smart Mobile Device Groups"* ]]; then
+	echo $echomode "$(tput setaf 8)Total number of smart groups: $groups$(tput sgr0)"
 	echo $echomode
 	echo $echomode $line":"
+	groups=0
 elif [[ "${line}" == *"User Groups"* ]]; then
+	echo $echomode "$(tput setaf 8)Total number of smart groups: $groups$(tput sgr0)"
 	echo $echomode
 	echo $echomode $line":"
+	groups=0
+elif [[ "${line}" == *"Device Enrollment Program"* ]]; then
+	echo $echomode "$(tput setaf 8)Total number of smart groups: $groups$(tput sgr0)"
 fi
 
 	#Start counting number of criteria per group
 	if [[ "${line}" == *"Membership Criteria"* ]]; then
 		counter=1
+		let groups=groups+1
 	
 	#Increment for each criteria found
 	elif [[ "${line}" == *"- and -"* || "${line}" == *"- or -"* ]]; then
@@ -477,13 +488,14 @@ fi
 		#Print the group names that have more than 10 criteria
 		if [ $counter = 10 ]; then
 			name=$(($lineNumber-11))
-			groupName=$(head -n $name $file | tail -n 1 | awk -F . '{print $NF}')
-			if [[ "$groupName" == *"Site"* ]]; then
+			groupName=$(head -n $name $file | tail -n 1 | awk -F '[\.]+[\ ]' '{print $NF}')
+			if [[ "$groupName" == *"Site "* ]]; then
 				name=$(($lineNumber-12))
-				groupName=$(head -n $name $file | tail -n 1 | awk -F . '{print $NF}')
+				groupName=$(head -n $name $file | tail -n 1 | awk -F '[\.]+[\ ]' '{print $NF}')
 			fi
-			echo $echomode "$(tput setaf 6)$groupName$(tput sgr0)"
 		fi
+	elif [[ "${line}" == *"==="* && $counter -gt 10 ]]; then
+		echo $echomode "$(tput setaf 6)$groupName \t\t $(tput setaf 9)$counter criteria$(tput sgr0)"
 	fi
 done < $file
 
