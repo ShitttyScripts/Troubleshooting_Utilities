@@ -65,6 +65,8 @@
 #		-Added VPP expiration output
 #	Version 2.3 Updated by Sam Fortuna June 4, 2015
 #		-Fixed table size parsing
+#	Version 2.4 Updated by Sam Fortuna July 2, 2015
+#		-Added nested smart group checks
 #
 ####################################################################################################
 
@@ -265,7 +267,7 @@ else
 	echo $echomode "APNS Expiration: \t\t\t $(echo "$subInfo" | grep "Expires" | awk 'NR==3 {print $NF}') \t$(tput setaf 9)$apnsresult Days$(tput sgr0)"
 fi
 
-vppdate=`cat $file | grep -A 20 "VPP Accounts" | awk '/Expiration Date/ {print $NF}'`		#get the current vpp expiration date
+vppdate=`cat $file | grep -A 100 "VPP Accounts" | awk '/Expiration Date/ {print $NF}'`		#get the current vpp expiration date
 if [[ -n $vppdate ]] ; then
 	for i in $vppdate; do
 		vppepoch=`date -jf "%Y/%m/%d %H:%M" "$i 00:00" +"%s"`				#convert it to unix epoch
@@ -377,7 +379,7 @@ do
 	#Get the name and scope of the policy
 	if [[ "$trigger" == *"true"* && "$inventory" == "true" && "$enabled" == "true" ]]; then
 		scope=`head -n $(($i + 5)) $file |tail -n 5 | awk '/Scope/ {$1=""; print $0}'`
-		name=`echo $echomode "$test" | awk -F . '/Name/ {print $NF}'`
+		name=`echo $echomode "$test" | awk -F '[\.]+[\.]' '/Name/ {print $NF}'`
 		echo $echomode $(tput setaf 6)"Name: \t $name" $(tput sgr0)
 		echo $echomode "Scope: \t $scope"
 	fi
@@ -408,7 +410,7 @@ do
 		
 	#Get the name of the policy
 	if [[ "$recurring" == "true" && "$inventory" == "false" && "$enabled" == "true" ]]; then
-		name=`echo $echomode "$test" | awk -F . '/Name/ {print $NF}'`
+		name=`echo $echomode "$test" | awk -F '[\.]+[\.]' '/Name/ {print $NF}'`
 		echo $echomode $(tput setaf 6)"Name: \t $name" $(tput sgr0)
 		echo $echomode "Scope: \t $scope"
 	fi
@@ -438,6 +440,8 @@ do
 		line=$(($i + 40))
 		inventory=`head -n $line $file | tail -n 15 | awk '/Update Inventory/ {print $NF}'`
 	fi
+	
+	
 		
 	#Increment count if all above criteria are true
 	if [[ "$trigger" == *"true"* && "$inventory" == "true" && "$enabled" == "true" ]]; then
@@ -448,9 +452,9 @@ done
 echo $echomode
 echo $echomode "There are" $inventoryDaily "policies that update inventory daily."
 
-#List smart group names that include more than 10 criteria
+#List smart group names that include 10 or more criteria
 echo $echomode
-echo $echomode "The following smart groups have more than 10 criteria:"
+echo $echomode "The following smart groups have 10+ criteria or 4+ nested criteria:"
 echo $echomode
 
 while read line
@@ -480,13 +484,34 @@ fi
 	if [[ "${line}" == *"Membership Criteria"* ]]; then
 		counter=1
 		let groups=groups+1
+		
+		#Check for nested groups
+		if [[ "${line}" == *"member of"* ]]; then
+			nested=1
+		else
+			nested=0
+		fi
 	
 	#Increment for each criteria found
 	elif [[ "${line}" == *"- and -"* || "${line}" == *"- or -"* ]]; then
 		let counter=counter+1
+		
+		#Check for nested groups
+		if [[ "${line}" == *"member of"* ]]; then
+			let nested=nested+1
+		fi
+		
+		if [ $nested -eq 4 ]; then
+			lineName=$(($lineNumber-$counter-1))
+			nestedName=$(head -n $lineName $file | tail -n 1 | awk -F '[\.]+[\ ]' '{print $NF}')
+			if [[ "$nestedName" == *"Site "* ]]; then
+				lineName=$(($lineNumber-$counter-2))
+				nestedName=$(head -n $lineName $file | tail -n 1 | awk -F '[\.]+[\ ]' '{print $NF}')
+			fi
+		fi
 
 		#Print the group names that have more than 10 criteria
-		if [ $counter = 10 ]; then
+		if [ $counter -eq 10 ]; then
 			name=$(($lineNumber-11))
 			groupName=$(head -n $name $file | tail -n 1 | awk -F '[\.]+[\ ]' '{print $NF}')
 			if [[ "$groupName" == *"Site "* ]]; then
@@ -494,8 +519,18 @@ fi
 				groupName=$(head -n $name $file | tail -n 1 | awk -F '[\.]+[\ ]' '{print $NF}')
 			fi
 		fi
-	elif [[ "${line}" == *"==="* && $counter -gt 10 ]]; then
-		echo $echomode "$(tput setaf 6)$groupName \t\t $(tput setaf 9)$counter criteria$(tput sgr0)"
+	elif [[ "${line}" == *"==="* && $counter -ge 10 ]]; then
+		if [ $nested -gt 3 ]; then
+			echo $echomode "$(tput setaf 6)$groupName \t\t $(tput setaf 9)$counter criteria, $nested nested groups$(tput sgr0)"
+			counter=1
+			nested=0
+		else
+			echo $echomode "$(tput setaf 6)$groupName \t\t $(tput setaf 9)$counter criteria,$(tput sgr0) $nested nested groups"
+			counter=1
+		fi
+	elif [[ "${line}" == *"==="* && $nested -gt 3 && $counter -lt 10 ]]; then
+		echo $echomode "$(tput setaf 6)$nestedName \t\t $(tput sgr0)$counter criteria, $(tput setaf 9)$nested nested groups$(tput sgr0)"
+		nested=0
 	fi
 done < $file
 
